@@ -246,6 +246,34 @@ def launchCheckstyleReport(cfg) {
     return reportInfo
 }
 
+def parseProjects(listOfProjectsFile, allowExcludes) {
+    def projects = []
+    def fullParamListSize = 5
+
+    new File(listOfProjectsFile).eachLine { project ->
+        if (!project.startsWith('#') && !project.isEmpty()) {
+            def params = project.split('\\|', -1)
+            if (params.length < fullParamListSize) {
+                throw new InvalidPropertiesFormatException("Error: line '$project' " +
+                    "in file '$listOfProjectsFile.name' should have $fullParamListSize " +
+                    "pipe-delimited sections!")
+            }
+
+            def projectConfig = new ProjectConfig(
+                repoName: params[0],
+                repoType: params[1],
+                repoUrl: params[2],
+                commitId: params[3],
+                excludes: allowExcludes ? params[4] : ""
+            )
+
+            projects << projectConfig
+        }
+    }
+
+    return projects
+}
+
 def generateCheckstyleReport(cfg) {
     println 'Testing Checkstyle started'
 
@@ -255,62 +283,29 @@ def generateCheckstyleReport(cfg) {
     def reportsDir = 'reports'
     makeWorkDirsIfNotExist(srcDir, reposDir, reportsDir)
 
-    final repoNameParamNo = 0
-    final repoTypeParamNo = 1
-    final repoURLParamNo = 2
-    final repoCommitIDParamNo = 3
-    final repoExcludesParamNo = 4
-    final fullParamListSize = 5
+    def projects = parseProjects(cfg.listOfProjects, cfg.allowExcludes)
 
-    def checkstyleConfig = cfg.checkstyleCfg
-    def checkstyleVersion = cfg.checkstyleVersion
-    def allowExcludes = cfg.allowExcludes
-    def useShallowClone = cfg.useShallowClone
-    def listOfProjectsFile = new File(cfg.listOfProjects)
-    def projects = listOfProjectsFile.readLines()
-    def extraMvnRegressionOptions = cfg.extraMvnRegressionOptions
-
-    projects.each {
-        project ->
-            if (!project.startsWith('#') && !project.isEmpty()) {
-                def params = project.split('\\|', -1)
-                if (params.length < fullParamListSize) {
-                    throw new InvalidPropertiesFormatException("Error: line '$project' " +
-                        "in file '$listOfProjectsFile.name' should have $fullParamListSize " +
-                        "pipe-delimited sections!")
-                }
-
-                def repoName = params[repoNameParamNo]
-                def repoType = params[repoTypeParamNo]
-                def repoUrl = params[repoURLParamNo]
-                def commitId = params[repoCommitIDParamNo]
-
-                def excludes = ""
-                if (allowExcludes) {
-                    excludes = params[repoExcludesParamNo]
-                }
-
-                deleteDir(srcDir)
-                if (repoType == 'local') {
-                    copyDir(repoUrl, getOsSpecificPath("$srcDir", "$repoName"))
-                } else {
-                    if (useShallowClone && !isGitSha(commitId)) {
-                        shallowCloneRepository(repoName, repoType, repoUrl, commitId, reposDir)
-                    } else {
-                        cloneRepository(repoName, repoType, repoUrl, commitId, reposDir)
-                    }
-                    copyDir(getOsSpecificPath("$reposDir", "$repoName"), getOsSpecificPath("$srcDir", "$repoName"))
-                }
-                runMavenExecution(srcDir, excludes, checkstyleConfig,
-                    checkstyleVersion, extraMvnRegressionOptions)
-                def repoPath = repoUrl
-                if (repoType != 'local') {
-                    repoPath = new File(getOsSpecificPath("$reposDir", "$repoName")).absolutePath
-                }
-                postProcessCheckstyleReport(targetDir, repoName, repoPath)
-                deleteDir(getOsSpecificPath("$srcDir", "$repoName"))
-                moveDir(targetDir, getOsSpecificPath("$reportsDir", "$repoName"))
+    projects.each { ProjectConfig projectConfig ->
+        deleteDir(srcDir)
+        if (projectConfig.repoType == 'local') {
+            copyDir(projectConfig.repoUrl, getOsSpecificPath("$srcDir", projectConfig.repoName))
+        } else {
+            if (cfg.useShallowClone && !isGitSha(projectConfig.commitId)) {
+                shallowCloneRepository(projectConfig.repoName, projectConfig.repoType, projectConfig.repoUrl, projectConfig.commitId, reposDir)
+            } else {
+                cloneRepository(projectConfig.repoName, projectConfig.repoType, projectConfig.repoUrl, projectConfig.commitId, reposDir)
             }
+            copyDir(getOsSpecificPath("$reposDir", projectConfig.repoName), getOsSpecificPath("$srcDir", projectConfig.repoName))
+        }
+        runMavenExecution(srcDir, projectConfig.excludes, cfg.checkstyleCfg,
+            cfg.checkstyleVersion, cfg.extraMvnRegressionOptions)
+        def repoPath = projectConfig.repoUrl
+        if (projectConfig.repoType != 'local') {
+            repoPath = new File(getOsSpecificPath("$reposDir", projectConfig.repoName)).absolutePath
+        }
+        postProcessCheckstyleReport(targetDir, projectConfig.repoName, repoPath)
+        deleteDir(getOsSpecificPath("$srcDir", projectConfig.repoName))
+        moveDir(targetDir, getOsSpecificPath("$reportsDir", projectConfig.repoName))
     }
 
     // restore empty_file to make src directory tracked by git
@@ -918,5 +913,21 @@ class CheckstyleReportInfo {
         this.commitSha = commitSha
         this.commitMsg = commitMsg
         this.commitTime = commitTime
+    }
+}
+
+class ProjectConfig {
+    String repoName
+    String repoType
+    String repoUrl
+    String commitId
+    String excludes
+
+    ProjectConfig(Map config) {
+        this.repoName = config.repoName
+        this.repoType = config.repoType
+        this.repoUrl = config.repoUrl
+        this.commitId = config.commitId
+        this.excludes = config.excludes
     }
 }
