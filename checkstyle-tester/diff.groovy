@@ -1,5 +1,6 @@
 import static java.lang.System.err
 import static java.nio.file.StandardCopyOption.REPLACE_EXISTING
+import org.yaml.snakeyaml.Yaml
 
 import java.nio.file.Files
 import java.nio.file.Paths
@@ -77,6 +78,8 @@ def getCliOptions(args) {
             + ' \'diff\' or \'single\'. (optional, default is \'diff\')')
         xm(longOpt: 'extraMvnRegressionOptions', args: 1, required: false, 'Extra arguments to pass to Maven' \
             + 'for Checkstyle Regression run (optional, ex: -Dmaven.prop=true)')
+        p(longOpt: 'projects', args: 1, required: false, argName: 'projects',
+            'Comma-separated list of projects to include (optional)')
     }
     return cli.parse(args)
 }
@@ -246,31 +249,26 @@ def launchCheckstyleReport(cfg) {
     return reportInfo
 }
 
-def parseProjects(listOfProjectsFile, allowExcludes) {
+def parseProjects(listOfProjectsFile, allowExcludes, includedProjects) {
     def projects = []
-    def fullParamListSize = 5
+    def yaml = new Yaml()
+    def input = new File(listOfProjectsFile).text
+    def data = yaml.load(input)
 
-    new File(listOfProjectsFile).eachLine { project ->
-        if (!project.startsWith('#') && !project.isEmpty()) {
-            def params = project.split('\\|', -1)
-            if (params.length < fullParamListSize) {
-                throw new InvalidPropertiesFormatException("Error: line '$project' " +
-                    "in file '$listOfProjectsFile.name' should have $fullParamListSize " +
-                    "pipe-delimited sections!")
+    data.projects.each { project ->
+        project.each { name, details ->
+            if (includedProjects.contains(name) && details.enabled != false) {
+                def projectConfig = new ProjectConfig(
+                    repoName: name,
+                    repoType: details.type,
+                    repoUrl: details.url,
+                    commitId: details.commit_id,
+                    excludes: allowExcludes ? details.excludes?.join(",") : ""
+                )
+                projects << projectConfig
             }
-
-            def projectConfig = new ProjectConfig(
-                repoName: params[0],
-                repoType: params[1],
-                repoUrl: params[2],
-                commitId: params[3],
-                excludes: allowExcludes ? params[4] : ""
-            )
-
-            projects << projectConfig
         }
     }
-
     return projects
 }
 
@@ -283,7 +281,7 @@ def generateCheckstyleReport(cfg) {
     def reportsDir = 'reports'
     makeWorkDirsIfNotExist(srcDir, reposDir, reportsDir)
 
-    def projects = parseProjects(cfg.listOfProjects, cfg.allowExcludes)
+    def projects = parseProjects(cfg.listOfProjects, cfg.allowExcludes, cfg.includedProjects)
 
     projects.each { ProjectConfig projectConfig ->
         deleteDir(srcDir)
@@ -788,6 +786,7 @@ class Config {
     def shortFilePaths
     def listOfProjects
     def mode
+    def includedProjects
 
     def baseBranch
     def patchBranch
@@ -818,6 +817,7 @@ class Config {
         shortFilePaths = cliOptions.shortFilePaths
         listOfProjects = cliOptions.listOfProjects
         extraMvnRegressionOptions = cliOptions.extraMvnRegressionOptions
+        includedProjects = cliOptions.projects?.split(',')
 
         checkstyleVersion = cliOptions.checkstyleVersion
         allowExcludes = cliOptions.allowExcludes
@@ -871,6 +871,7 @@ class Config {
             extraMvnRegressionOptions: extraMvnRegressionOptions,
             allowExcludes:allowExcludes,
             useShallowClone: useShallowClone,
+            includedProjects: includedProjects,
         ]
     }
 
@@ -884,6 +885,7 @@ class Config {
             extraMvnRegressionOptions: extraMvnRegressionOptions,
             allowExcludes: allowExcludes,
             useShallowClone: useShallowClone,
+            includedProjects: includedProjects,
         ]
     }
 
@@ -898,6 +900,7 @@ class Config {
             mode: mode,
             allowExcludes: allowExcludes,
             useShallowClone: useShallowClone,
+            includedProjects: includedProjects,
         ]
     }
 }
